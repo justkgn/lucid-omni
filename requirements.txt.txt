@@ -1,4 +1,7 @@
 streamlit
 groq
 pypdf
-
+pandas
+youtube-transcript-api
+fpdf
+requests
