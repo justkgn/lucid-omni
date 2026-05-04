@@ -7,26 +7,28 @@ import random
 import time
 import datetime
 import requests
+from youtube_transcript_api import YouTubeTranscriptApi
 
-# --- 1. KULLANICI KİMLİĞİ VE DOSYA YÖNETİMİ ---
-# Her tarayıcı/kullanıcı için benzersiz bir ID oluşturur
+# --- 1. KULLANICI KİMLİĞİ VE DOSYA SİSTEMİ ---
 if "user_id" not in st.session_state:
-    # Kullanıcıyı cihazından tanımak için rastgele bir ID atıyoruz
     st.session_state.user_id = f"User_{random.randint(10000, 99999)}"
 
-# Kullanıcıya özel klasör yolu
-USER_CHATS_DIR = f"chats/{st.session_state.user_id}"
-if not os.path.exists(USER_CHATS_DIR):
-    os.makedirs(USER_CHATS_DIR)
-
+# Klasörleri oluştur
+CHATS_BASE_DIR = "chats"
+USER_CHATS_DIR = f"{CHATS_BASE_DIR}/{st.session_state.user_id}"
 LOG_VISITORS = "ziyaretciler.json"
 
+for path in [CHATS_BASE_DIR, USER_CHATS_DIR]:
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+# --- 2. LOGLAMA VE YARDIMCI FONKSİYONLAR ---
 def ziyaretci_kaydet():
     try:
         response = requests.get('http://ip-api.com/json/', timeout=5)
         data = response.json()
         yeni_kayit = {
-            "user_id": st.session_state.user_id, # Kimin hangi IP ile geldiğini eşleştirir
+            "user_id": st.session_state.user_id,
             "ip": data.get("query", "Bilinmiyor"),
             "konum": f"{data.get('city')}, {data.get('country')}",
             "zaman": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -41,70 +43,108 @@ def ziyaretci_kaydet():
             json.dump(visits, f, ensure_ascii=False, indent=4)
     except: pass
 
-ziyaretci_kaydet()
-
-# --- 2. SOHBET FONKSİYONLARI (KULLANICIYA ÖZEL) ---
 def sohbeti_kaydet(chat_id, messages):
     with open(f"{USER_CHATS_DIR}/{chat_id}.json", "w", encoding="utf-8") as f:
         json.dump(messages, f, ensure_ascii=False, indent=4)
 
 def sohbetleri_listele():
-    # Sadece aktif kullanıcının klasöründeki dosyaları getirir
     return sorted([f.replace(".json", "") for f in os.listdir(USER_CHATS_DIR) if f.endswith(".json")], reverse=True)
 
-# --- 3. API VE ARAYÜZ ---
+# Uygulama açılışında bir kez logla
+if "logged" not in st.session_state:
+    ziyaretci_kaydet()
+    st.session_state.logged = True
+
+# --- 3. API BAĞLANTISI ---
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 except:
-    client = Groq(api_key="GROQ_API_KEY")
+    client = Groq(api_key="BURAYA_GROQ_ANAHTARINI_YAZ")
 
-st.set_page_config(page_title="Lucid Omni v8", page_icon="🚀", layout="wide")
+# --- 4. ARAYÜZ AYARLARI ---
+st.set_page_config(page_title="Lucid Omni", page_icon="🚀", layout="wide")
 
-# --- 4. YAN PANEL ---
+# --- 5. SESSION STATE BAŞLATMA ---
+if "current_chat" not in st.session_state:
+    st.session_state.current_chat = "Sohbet_Basla"
+
+if "messages" not in st.session_state:
+    path = f"{USER_CHATS_DIR}/{st.session_state.current_chat}.json"
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            st.session_state.messages = json.load(f)
+    else:
+        st.session_state.messages = []
+
+# --- 6. YAN PANEL (SIDEBAR) ---
 with st.sidebar:
     st.title("🤖 Lucid Omni")
     st.caption(f"Senin Kimliğin: {st.session_state.user_id}")
     
     if st.button("➕ Yeni Sohbet Başlat", use_container_width=True):
-        st.session_state.current_chat = f"Sohbet_{int(time.time())}"
+        new_id = f"Sohbet_{random.randint(10000, 99999)}"
+        st.session_state.current_chat = new_id
         st.session_state.messages = []
-        sohbeti_kaydet(st.session_state.current_chat, [])
+        sohbeti_kaydet(new_id, [])
         st.rerun()
 
     st.divider()
     st.subheader("📂 Senin Sohbetlerin")
-    my_chats = sohbetleri_listele()
-    for c in my_chats:
-        col_c, col_d = st.columns([0.8, 0.2])
-        if col_c.button(f"💬 {c[:12]}", key=f"s_{c}", use_container_width=True):
+    for c in sohbetleri_listele():
+        col_chat, col_del = st.columns([0.8, 0.2])
+        if col_chat.button(f"💬 {c[:12]}", key=f"btn_{c}", use_container_width=True):
             st.session_state.current_chat = c
             with open(f"{USER_CHATS_DIR}/{c}.json", "r", encoding="utf-8") as f:
                 st.session_state.messages = json.load(f)
             st.rerun()
-        if col_d.button("🗑️", key=f"d_{c}"):
+        if col_del.button("🗑️", key=f"del_{c}"):
             os.remove(f"{USER_CHATS_DIR}/{c}.json")
             st.rerun()
 
     st.divider()
     with st.expander("🔐 Admin Paneli"):
         if st.text_input("Şifre", type="password") == "Lucid2026":
-            if st.button("📊 Tüm Kullanıcıları Gör"):
+            if st.button("📊 Ziyaretçileri Gör"):
                 if os.path.exists(LOG_VISITORS):
                     st.table(json.load(open(LOG_VISITORS)))
-            
-            st.write("📂 Sunucu Klasör Yapısı:")
-            # Admin olarak hangi kullanıcı klasörleri olduğunu görebilirsin
-            st.write(os.listdir("chats"))
+            st.write("Klasörler:", os.listdir(CHATS_BASE_DIR))
 
-# --- 5. ANA PANEL (SOHBET AKIŞI) ---
-if "current_chat" not in st.session_state:
-    st.session_state.current_chat = "Sohbet_Baslangic"
-    if not os.path.exists(f"{USER_CHATS_DIR}/Sohbet_Baslangic.json"):
-        sohbeti_kaydet("Sohbet_Baslangic", [])
+# --- 7. ANA PANEL ---
+st.title(f"🚀 Lucid Omni - {st.session_state.current_chat}")
 
-if "messages" not in st.session_state:
-    with open(f"{USER_CHATS_DIR}/{st.session_state.current_chat}.json", "r", encoding="utf-8") as f:
-        st.session_state.messages = json.load(f)
+tab_chat, tab_vision, tab_yt, tab_studio = st.tabs(["💬 Sohbet", "👁️ Vision", "🎥 YouTube", "🛠️ Stüdyo"])
 
-# (Sohbet arayüzü ve diğer sekmeler v7 ile aynı şekilde devam eder...)
-# Not: tab1, tab2 vb. kısımları v7'den buraya aynen kopyalayabilirsin.
+with tab_chat:
+    # Mesajları göster
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+    
+    # Giriş alanı
+    if prompt := st.chat_input("Lucid'e bir şey sor..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        
+        with st.chat_message("assistant"):
+            res = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "system", "content": "Sen Lucid'sin."}] + st.session_state.messages
+            )
+            response = res.choices[0].message.content
+            st.markdown(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            sohbeti_kaydet(st.session_state.current_chat, st.session_state.messages)
+
+with tab_vision:
+    st.info("Bu sekme çok yakında görsel analiz için aktif olacak.")
+
+with tab_yt:
+    yt_url = st.text_input("Video URL:")
+    if st.button("Analiz Et"):
+        st.warning("YouTube altyazı servisi şu an meşgul, lütfen sonra tekrar deneyin.")
+
+with tab_studio:
+    st.subheader("HTML Önizleme")
+    code = st.text_area("Kodunu yaz:", "<h1>Merhaba</h1>")
+    st.components.v1.html(code, height=300)
